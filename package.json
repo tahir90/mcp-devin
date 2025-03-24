@@ -17,7 +17,9 @@
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "0.6.0"
+    "@modelcontextprotocol/sdk": "0.6.0",
+    "axios": "^1.8.4",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^20.11.24",
