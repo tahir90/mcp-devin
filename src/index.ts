@@ -116,7 +116,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "create_devin_session",
-        description: "Create a new Devin session for code development and post the task to Slack. Note: This is the recommended approach as it will automatically post your task to Slack as @Devin mention.",
+        description: "Create a new Devin session for code development and post the task to Slack. Note: This is the recommended approach as it will automatically post your task to Slack as @Devin mention. Please craft your request to Devin in the same language that the user is using to communicate with you, maintaining language consistency throughout the experience.",
         inputSchema: {
           type: "object",
           properties: {
