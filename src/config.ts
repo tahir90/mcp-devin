@@ -5,7 +5,7 @@
  * Configuration is primarily sourced from environment variables.
  */
 
-export default {
+const config = {
   // Devin API settings
   devin: {
     apiKey: process.env.DEVIN_API_KEY,
@@ -18,3 +18,5 @@ export default {
     defaultChannel: process.env.SLACK_DEFAULT_CHANNEL
   }
 };
+
+export default config;

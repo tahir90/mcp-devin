@@ -21,7 +21,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { WebClient } from "@slack/web-api";
 import axios from "axios";
-import config from "../config/default.js";
+import config from "./config.js";
 
 // Configuration for Devin API
 const API_KEY = config.devin.apiKey;
@@ -50,6 +50,13 @@ if (!SLACK_DEFAULT_CHANNEL) {
 
 // Initialize Slack client
 const slackClient = new WebClient(SLACK_TOKEN);
+
+/**
+ * セッションIDから'devin-'接頭辞を取り除く関数
+ */
+function normalizeSessionId(sessionId: string): string {
+  return sessionId.replace(/^devin-/, '');
+}
 
 /**
  * チャンネル名またはIDからチャンネルIDを取得
@@ -279,7 +286,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const response = await axios.post(
-          `${BASE_URL}/sessions`,
+          `${BASE_URL}/session`,
           requestBody,
           { headers: getHeaders() }
         );
@@ -320,7 +327,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: "text",
             text: JSON.stringify({
-              session_id: response.data.session_id,
+              session_id: normalizeSessionId(response.data.session_id),
+              original_session_id: response.data.session_id,
               url: response.data.url,
               organization: ORG_NAME,
               is_new_session: response.data.is_new_session,
@@ -368,7 +376,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         // Get session info from Devin API
         const response = await axios.get(
-          `${BASE_URL}/sessions/${session_id}`,
+          `${BASE_URL}/session/${normalizeSessionId(session_id)}`,
           { headers: getHeaders() }
         );
         
@@ -380,7 +388,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // This is a simplified approach - in a real implementation you would need
             // to store the slack_channel and slack_message_ts in a database associated with the session_id
             const sessionResponse = await axios.get(
-              `${BASE_URL}/sessions/${session_id}/messages`,
+              `${BASE_URL}/session/${normalizeSessionId(session_id)}/message`,
               { headers: getHeaders() }
             );
             
@@ -391,6 +399,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           } catch (slackError) {
             console.error('Error fetching Slack info:', slackError);
           }
+        }
+
+        // セッションIDを正規化して返す
+        if (data && data.session_id) {
+          data = {
+            ...data,
+            original_session_id: data.session_id,
+            session_id: normalizeSessionId(data.session_id)
+          };
         }
 
         return {
@@ -449,32 +466,55 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       try {
         // Send message to Devin API
+        // Devin APIへメッセージ送信
         const response = await axios.post(
-          `${BASE_URL}/sessions/${session_id}/messages`,
-          { text: message },
+          `${BASE_URL}/session/${normalizeSessionId(session_id)}/message`,
+          { message },
           { headers: getHeaders() }
         );
         
+        // APIレスポンスの詳細なチェック
+        // HTTP 200系のステータスが返ってきたら基本的に成功とみなす
+        // 空のオブジェクトが返る場合も成功と判断する
+        const isSuccess = response.status >= 200 && response.status < 300;
+        
         let slackResponse = null;
-        // If Slack thread information is provided, send also to Slack
-        if (slack_channel && slack_thread_ts) {
+        // Slackスレッド情報が提供されていれば、Slackにも送信
+        if (isSuccess && slack_channel && slack_thread_ts) {
           slackResponse = await sendSlackMessage(slack_channel, message, slack_thread_ts);
         }
 
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              status: "Message sent successfully",
-              message_id: response.data.message_id,
-              slack_response: slackResponse ? {
-                channel: slack_channel,
-                thread_ts: slack_thread_ts,
-                message_ts: slackResponse.ts
-              } : null
-            }, null, 2)
-          }]
-        };
+        if (isSuccess) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "Message sent successfully",
+                success: true,
+                response_data: response.data || {},
+                slack_response: slackResponse ? {
+                  channel: slack_channel,
+                  thread_ts: slack_thread_ts,
+                  message_ts: slackResponse.ts
+                } : null
+              }, null, 2)
+            }]
+          };
+        } else {
+          // APIレスポンスが成功しなかった場合
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "Message sending failed",
+                success: false,
+                http_status: response.status,
+                response_data: response.data || {}
+              }, null, 2)
+            }],
+            isError: true
+          };
+        }
       } catch (error) {
         if (axios.isAxiosError(error)) {
           return {
@@ -507,17 +547,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (offset !== undefined) params.offset = offset;
 
         const response = await axios.get(
-          `${BASE_URL}/sessions`,
+          `${BASE_URL}/session`,
           { 
             params,
             headers: getHeaders()
           }
         );
         
+        // セッション一覧の各セッションIDを正規化する
+        const normalizedData = { ...response.data };
+        if (normalizedData.sessions && Array.isArray(normalizedData.sessions)) {
+          normalizedData.sessions = normalizedData.sessions.map((session: { session_id?: string; [key: string]: any }) => {
+            if (session.session_id) {
+              return {
+                ...session,
+                original_session_id: session.session_id,
+                session_id: normalizeSessionId(session.session_id)
+              };
+            }
+            return session;
+          });
+        }
+        
         return {
           content: [{
             type: "text",
-            text: JSON.stringify(response.data, null, 2)
+            text: JSON.stringify(normalizedData, null, 2)
           }]
         };
       } catch (error) {
