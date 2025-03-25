@@ -1,46 +1,77 @@
-# @kazuph/mcp-devin MCP Server
+# @kazuph/mcp-devin MCP Server with Slack Integration
 
-mcp server for devin
+MCP server for Devin AI with Slack integration
 
-This is a TypeScript-based MCP server that implements a simple notes system. It demonstrates core MCP concepts by providing:
+This is a TypeScript-based MCP server that provides integration between Devin AI and Slack. The server enables:
 
-- Resources representing text notes with URIs and metadata
-- Tools for creating new notes
-- Prompts for generating summaries of notes
+- Creating Devin sessions and automatically posting tasks to Slack
+- Sending messages to Devin sessions and the corresponding Slack threads
+- Managing sessions with enhanced Slack integration
 
 ## Features
 
-### Resources
-- List and access notes via `note://` URIs
-- Each note has a title, content and metadata
-- Plain text mime type for simple content access
+### Slack Integration
+- Automatically posts Devin tasks to Slack with `@Devin` mentions
+- Maintains thread context between Devin sessions and Slack threads
+- Uses Slack Bot token for authentication
 
 ### Tools
-- `create_note` - Create new text notes
-  - Takes title and content as required parameters
-  - Stores note in server state
-
-### Prompts
-- `summarize_notes` - Generate a summary of all stored notes
-  - Includes all note contents as embedded resources
-  - Returns structured prompt for LLM summarization
+- `create_devin_session` - Create a new Devin session and post to Slack
+  - Posts task to a designated Slack channel with `@Devin` mention
+  - Returns session details and Slack message information
+- `send_message_to_session` - Send a message to a Devin session with optional Slack thread
+  - Can simultaneously post to the Slack thread when provided
+- `get_devin_session` - Get session details with optional Slack message history
+- `list_devin_sessions` - List all Devin sessions
+- `get_organization_info` - Get information about your Devin organization
 
 ## Development
 
 Install dependencies:
 ```bash
-npm install
+pnpm install
 ```
 
 Build the server:
 ```bash
-npm run build
+pnpm run build
 ```
 
 For development with auto-rebuild:
 ```bash
-npm run watch
+pnpm run watch
 ```
+
+## Configuration
+
+### MCP Server Configuration
+
+The server is configured through the MCP server configuration file. Add the following to your configuration:
+
+```json
+"devin-mono": {
+  "command": "node",
+  "args": ["/path/to/mcp-devin/build/index.js"],
+  "env": {
+    "DEVIN_API_KEY": "your-devin-api-key",
+    "DEVIN_ORG_NAME": "Your Organization",
+    "SLACK_BOT_TOKEN": "xoxb-your-slack-bot-token",
+    "SLACK_DEFAULT_CHANNEL": "general"
+  }
+}
+```
+
+### Required Environment Variables
+
+The following environment variables must be set in the `env` section:
+
+- `DEVIN_API_KEY`: Your Devin API key
+- `DEVIN_ORG_NAME`: (Optional) Your organization name, defaults to "Default Organization"
+- `DEVIN_BASE_URL`: (Optional) Base URL for the Devin API, defaults to "https://api.devin.ai/v1"
+- `SLACK_BOT_TOKEN`: Your Slack Bot User OAuth Token (starts with xoxb-)
+- `SLACK_DEFAULT_CHANNEL`: The default Slack channel where messages will be posted. You can use either:
+  - Channel ID (e.g. `C123ABC456`)
+  - Channel name (e.g. `general` or `#general`)
 
 ## Installation
 
@@ -64,7 +95,7 @@ On Windows: `%APPDATA%/Claude/claude_desktop_config.json`
 Since MCP servers communicate over stdio, debugging can be challenging. We recommend using the [MCP Inspector](https://github.com/modelcontextprotocol/inspector), which is available as a package script:
 
 ```bash
-npm run inspector
+pnpm run inspector
 ```
 
 The Inspector will provide a URL to access debugging tools in your browser.

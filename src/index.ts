@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * Devin MCP Server
+ * Devin MCP Server with Slack Integration
  * 
- * This server provides MCP tools for interacting with Devin AI.
- * It uses environment variables for configuration:
+ * This server provides MCP tools for interacting with Devin AI and integrates with Slack.
+ * It uses environment variables for configuration, which can be set directly or through config files:
  * 
  * - DEVIN_API_KEY: Required. API key for Devin.
  * - DEVIN_ORG_NAME: Optional. Organization name (default: "Default Organization")
  * - DEVIN_BASE_URL: Optional. Base URL for Devin API (default: "https://api.devin.ai/v1")
+ * - SLACK_BOT_TOKEN: Required for Slack integration. Slack Bot User OAuth Token.
+ * - SLACK_DEFAULT_CHANNEL: Required for Slack integration. Default channel ID to post to.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -17,17 +19,72 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { WebClient } from "@slack/web-api";
 import axios from "axios";
+import config from "../config/default.js";
 
-// 環境変数から設定を取得
-const API_KEY = process.env.DEVIN_API_KEY;
-const ORG_NAME = process.env.DEVIN_ORG_NAME || "Default Organization";
-const BASE_URL = process.env.DEVIN_BASE_URL || "https://api.devin.ai/v1";
+// Configuration for Devin API
+const API_KEY = config.devin.apiKey;
+const ORG_NAME = config.devin.orgName;
+const BASE_URL = config.devin.baseUrl;
 
-// APIキーの確認
+// Configuration for Slack API
+const SLACK_TOKEN = config.slack.token;
+const SLACK_DEFAULT_CHANNEL = config.slack.defaultChannel;
+
+// Required configuration validation
 if (!API_KEY) {
-  console.error("Error: DEVIN_API_KEY environment variable not set");
+  console.error("Error: DEVIN_API_KEY is not set");
   process.exit(1);
+}
+
+if (!SLACK_TOKEN) {
+  console.error("Error: SLACK_BOT_TOKEN is not set");
+  process.exit(1);
+}
+
+if (!SLACK_DEFAULT_CHANNEL) {
+  console.error("Error: SLACK_DEFAULT_CHANNEL is not set");
+  process.exit(1);
+}
+
+// Initialize Slack client
+const slackClient = new WebClient(SLACK_TOKEN);
+
+/**
+ * チャンネル名またはIDからチャンネルIDを取得
+ * チャンネル名が指定された場合は検索して対応するIDを返す
+ * すでにIDの場合はそのまま返す
+ */
+async function getChannelId(channelNameOrId: string): Promise<string> {
+  // すでにIDの場合 (C12345 形式)
+  if (/^[C][A-Z0-9]{8,}$/.test(channelNameOrId)) {
+    return channelNameOrId;
+  }
+  
+  try {
+    // チャンネル名の場合、一覧を取得して検索
+    const result = await slackClient.conversations.list();
+    if (result.channels && Array.isArray(result.channels)) {
+      // チャンネル名で検索 (#は省略可能)
+      const normalizedName = channelNameOrId.startsWith('#') ? 
+        channelNameOrId.substring(1) : channelNameOrId;
+      
+      const channel = result.channels.find(
+        (ch) => ch.name === normalizedName
+      );
+      
+      if (channel && channel.id) {
+        return channel.id;
+      }
+    }
+    
+    // 見つからない場合はエラー
+    throw new Error(`Channel not found: ${channelNameOrId}`);
+  } catch (error) {
+    console.error(`Error resolving channel name to ID: ${error}`);
+    throw error;
+  }
 }
 
 // サーバー設定
@@ -59,7 +116,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "create_devin_session",
-        description: "Create a new Devin session for code development",
+        description: "Create a new Devin session for code development and post the task to Slack. Note: This is the recommended approach as it will automatically post your task to Slack as @Devin mention.",
         inputSchema: {
           type: "object",
           properties: {
@@ -78,6 +135,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             idempotent: {
               type: "boolean",
               description: "Enable idempotent session creation"
+            },
+            slack_channel: {
+              type: "string",
+              description: "Optional Slack channel ID to post to (default: from config)"
             }
           },
           required: ["prompt"]
@@ -85,13 +146,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_devin_session",
-        description: "Get information about an existing Devin session",
+        description: "Get information about an existing Devin session and optionally fetch associated Slack messages",
         inputSchema: {
           type: "object",
           properties: {
             session_id: {
               type: "string",
               description: "The ID of the Devin session"
+            },
+            fetch_slack_info: {
+              type: "boolean",
+              description: "Whether to fetch associated Slack messages (if available)"
             }
           },
           required: ["session_id"]
@@ -116,7 +181,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "send_message_to_session",
-        description: "Send a message to an existing Devin session",
+        description: "Send a message to an existing Devin session and optionally to the associated Slack thread",
         inputSchema: {
           type: "object",
           properties: {
@@ -127,6 +192,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             message: {
               type: "string",
               description: "Message to send to Devin"
+            },
+            slack_channel: {
+              type: "string",
+              description: "Optional Slack channel ID to post to"
+            },
+            slack_thread_ts: {
+              type: "string",
+              description: "Optional Slack thread timestamp to reply to"
             }
           },
           required: ["session_id", "message"]
@@ -145,6 +218,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 /**
+ * Send a message to Slack channel
+ */
+async function sendSlackMessage(channel: string, text: string, threadTs?: string) {
+  try {
+    // チャンネルIDを解決
+    const channelId = await getChannelId(channel);
+    
+    const messageOptions = {
+      channel: channelId,
+      text,
+      thread_ts: threadTs,
+      as_user: true
+    };
+
+    const response = await slackClient.chat.postMessage(messageOptions);
+    return response;
+  } catch (error) {
+    console.error('Error sending message to Slack:', error);
+    throw error;
+  }
+}
+
+/**
  * ツール実行ハンドラー
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -155,6 +251,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const machine_snapshot_id = request.params.arguments?.machine_snapshot_id as string | undefined;
       const max_acu = Number(request.params.arguments?.max_acu) || undefined;
       const idempotent = Boolean(request.params.arguments?.idempotent) || false;
+      const slack_channel = request.params.arguments?.slack_channel as string || SLACK_DEFAULT_CHANNEL;
 
       if (!prompt) {
         return {
@@ -167,6 +264,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
+        // Create Devin session
         const requestBody: Record<string, any> = {
           prompt,
           idempotent
@@ -186,6 +284,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { headers: getHeaders() }
         );
 
+        // Find the Devin user ID in Slack
+        let devinUserId = "";
+        try {
+          // Devinユーザーを検索
+          const result = await slackClient.users.list();
+          if (result.members && Array.isArray(result.members)) {
+            const devinUser = result.members.find(user => 
+              user.name === "devin" || 
+              user.real_name === "Devin" || 
+              user.profile?.display_name === "Devin"
+            );
+            
+            if (devinUser && devinUser.id) {
+              devinUserId = devinUser.id;
+            }
+          }
+        } catch (userError) {
+          console.error('Error finding Devin user:', userError);
+        }
+
+        // Post task to Slack channel with proper mention
+        let slackMessage = "";
+        if (devinUserId) {
+          // 正しいメンション形式を使用
+          slackMessage = `<@${devinUserId}> ${prompt}`;
+        } else {
+          // Devinユーザーが見つからない場合はフォールバック
+          slackMessage = `@Devin ${prompt}`;
+        }
+        
+        const slackResponse = await sendSlackMessage(slack_channel, slackMessage);
+        
         return {
           content: [{
             type: "text",
@@ -194,6 +324,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               url: response.data.url,
               organization: ORG_NAME,
               is_new_session: response.data.is_new_session,
+              slack_message_ts: slackResponse.ts,
+              slack_channel: slack_channel
             }, null, 2)
           }]
         };
@@ -221,6 +353,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // セッション情報取得
     case "get_devin_session": {
       const session_id = String(request.params.arguments?.session_id);
+      const fetch_slack_info = Boolean(request.params.arguments?.fetch_slack_info);
 
       if (!session_id) {
         return {
@@ -233,15 +366,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
+        // Get session info from Devin API
         const response = await axios.get(
-          `${BASE_URL}/session/${session_id}`,
+          `${BASE_URL}/sessions/${session_id}`,
           { headers: getHeaders() }
         );
         
+        // If requested, try to fetch additional Slack info about this session
+        let data = response.data;
+        
+        if (fetch_slack_info) {
+          try {
+            // This is a simplified approach - in a real implementation you would need
+            // to store the slack_channel and slack_message_ts in a database associated with the session_id
+            const sessionResponse = await axios.get(
+              `${BASE_URL}/sessions/${session_id}/messages`,
+              { headers: getHeaders() }
+            );
+            
+            data = {
+              ...data,
+              messages: sessionResponse.data.messages
+            };
+          } catch (slackError) {
+            console.error('Error fetching Slack info:', slackError);
+          }
+        }
+
         return {
           content: [{
             type: "text",
-            text: JSON.stringify(response.data, null, 2)
+            text: JSON.stringify(data, null, 2)
           }]
         };
       } catch (error) {
@@ -269,6 +424,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "send_message_to_session": {
       const session_id = String(request.params.arguments?.session_id);
       const message = String(request.params.arguments?.message);
+      const slack_channel = request.params.arguments?.slack_channel as string | undefined;
+      const slack_thread_ts = request.params.arguments?.slack_thread_ts as string | undefined;
 
       if (!session_id) {
         return {
@@ -291,20 +448,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       try {
+        // Send message to Devin API
         const response = await axios.post(
-          `${BASE_URL}/session/${session_id}/message`,
-          { message },
+          `${BASE_URL}/sessions/${session_id}/messages`,
+          { text: message },
           { headers: getHeaders() }
         );
         
+        let slackResponse = null;
+        // If Slack thread information is provided, send also to Slack
+        if (slack_channel && slack_thread_ts) {
+          slackResponse = await sendSlackMessage(slack_channel, message, slack_thread_ts);
+        }
+
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
-              success: true,
-              session_id,
-              message_sent: message,
-              response: response.data
+              status: "Message sent successfully",
+              message_id: response.data.message_id,
+              slack_response: slackResponse ? {
+                channel: slack_channel,
+                thread_ts: slack_thread_ts,
+                message_ts: slackResponse.ts
+              } : null
             }, null, 2)
           }]
         };

@@ -1,7 +1,7 @@
 {
   "name": "@kazuph/mcp-devin",
   "version": "0.1.0",
-  "description": "mcp server for devin",
+  "description": "mcp server for devin with Slack integration",
   "private": true,
   "type": "module",
   "bin": {
@@ -12,12 +12,13 @@
   ],
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
-    "prepare": "npm run build",
+    "prepare": "pnpm run build",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "0.6.0",
+    "@slack/web-api": "^6.13.0",
     "axios": "^1.8.4",
     "zod": "^3.24.2"
   },
