@@ -1,1 +1,2 @@
-toml [build] install = "pnpm install --no-frozen-lockfile"
+[build]
+install = "pnpm install --no-frozen-lockfile"
