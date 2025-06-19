@@ -1,2 +1,2 @@
 [build]
-install = "pnpm install --no-frozen-lockfile"
+  dockerfile = "Dockerfile"
